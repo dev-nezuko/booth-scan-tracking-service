@@ -1,46 +1,55 @@
 import { Router } from "express";
+import { z } from "zod";
 import type Database from "better-sqlite3";
+import { syncHandler } from "../middleware/async-handler.js";
+import { sendSuccess } from "../utils/respond.js";
 import { createScanRepository } from "../../repositories/scan.repository.js";
+
+const ScansQuerySchema = z.object({
+  badgeId: z.string().optional(),
+  boothName: z.string().optional(),
+  scanDate: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(500).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+});
 
 export function createScansRouter(db: Database.Database): Router {
   const router = Router();
   const scanRepo = createScanRepository(db);
 
-  /**
-   * GET /scans
-   * Search scans with optional filters. All params are optional and combinable.
-   *
-   * Query params:
-   *   badgeId    — exact match on player badge ID
-   *   boothName  — partial, case-insensitive match on booth name
-   *   scanDate   — prefix match (e.g. "2026-02-09" matches all scans that day)
-   *   limit      — max results to return (default 50, max 500)
-   *   offset     — pagination offset (default 0)
-   */
-  router.get("/scans", (req, res) => {
-    const badgeId = typeof req.query["badgeId"] === "string" ? req.query["badgeId"] : undefined;
-    const boothName = typeof req.query["boothName"] === "string" ? req.query["boothName"] : undefined;
-    const scanDate = typeof req.query["scanDate"] === "string" ? req.query["scanDate"] : undefined;
+  router.get(
+    "/scans",
+    syncHandler((req, res) => {
+      const parsed = ScansQuerySchema.safeParse({
+        badgeId: req.query["badgeId"],
+        boothName: req.query["boothName"],
+        scanDate: req.query["scanDate"],
+        limit: req.query["limit"],
+        offset: req.query["offset"],
+      });
 
-    const rawLimit = Number(req.query["limit"] ?? 50);
-    const rawOffset = Number(req.query["offset"] ?? 0);
+      if (!parsed.success) {
+        throw parsed.error;
+      }
 
-    const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 50;
-    const offset = Number.isInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+      const { badgeId, boothName, scanDate } = parsed.data;
+      const limit = parsed.data.limit ?? 50;
+      const offset = parsed.data.offset ?? 0;
 
-    const { rows, total } = scanRepo.searchScans({ badgeId, boothName, scanDate, limit, offset });
+      const { rows, total } = scanRepo.searchScans({ badgeId, boothName, scanDate, limit, offset });
 
-    res.json({
-      scans: rows.map((s) => ({
-        badgeId: s.badge_id,
-        boothName: s.booth_name,
-        scanDate: s.scan_date,
-      })),
-      total,
-      limit,
-      offset,
-    });
-  });
+      sendSuccess(res, {
+        scans: rows.map((s) => ({
+          badgeId: s.badge_id,
+          boothName: s.booth_name,
+          scanDate: s.scan_date,
+        })),
+        total,
+        limit,
+        offset,
+      });
+    }),
+  );
 
   return router;
 }

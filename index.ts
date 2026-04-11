@@ -7,6 +7,8 @@ import { createWsServer } from "./src/websocket/server.js";
 import { createPlayersRouter } from "./src/api/routes/players.js";
 import { createScansRouter } from "./src/api/routes/scans.js";
 import healthRouter from "./src/api/routes/health.js";
+import { errorHandler } from "./src/api/middleware/error-handler.js";
+import { notFoundHandler } from "./src/api/middleware/not-found.js";
 import { startScheduler } from "./src/scheduler/index.js";
 import { createPlayerRepository } from "./src/repositories/player.repository.js";
 import { logger } from "./src/utils/logger.js";
@@ -19,6 +21,9 @@ const db = getDb();
 app.use(healthRouter);
 app.use(createPlayersRouter(db));
 app.use(createScansRouter(db));
+
+app.use(notFoundHandler);
+app.use(errorHandler);
 
 const httpServer = http.createServer(app);
 

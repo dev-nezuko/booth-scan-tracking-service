@@ -4,7 +4,7 @@ import type { Scan } from "../types/domain.js";
 import { createScanRepository } from "../repositories/scan.repository.js";
 import { createPlayerRepository } from "../repositories/player.repository.js";
 import { createCheckpointRepository } from "../repositories/checkpoint.repository.js";
-import { fetchAllScansSince } from "./poller.service.js";
+import { fetchAllScansInRange } from "./poller.service.js";
 import { broadcastPlayerCounts } from "../websocket/broadcaster.js";
 import { logger } from "../utils/logger.js";
 import { env } from "../config/env.js";
@@ -25,12 +25,13 @@ export async function runPollCycle(db: Database.Database): Promise<void> {
   const checkpointRepo = createCheckpointRepository(db);
 
   const fromDate = checkpointRepo.getLastScanDate() ?? env.EVENT_START_DATE;
+  const upperBoundExclusive = new Date().toISOString();
 
-  logger.info({ fromDate }, "Poll cycle started");
+  logger.info({ fromDate, upperBoundExclusive }, "Poll cycle started");
 
   let totalNew = 0;
 
-  for await (const rawBatch of fetchAllScansSince(fromDate)) {
+  for await (const rawBatch of fetchAllScansInRange(fromDate, upperBoundExclusive)) {
     const validScans = rawBatch.flatMap((r) => {
       const scan = toValidScan(r);
       return scan ? [scan] : [];
