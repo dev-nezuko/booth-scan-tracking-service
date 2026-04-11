@@ -1,397 +1,64 @@
-# Fankave — Event Scan Tracking System
+# Booth scan tracking service
 
-A production-grade Node.js + TypeScript backend that polls the EventsCloud scan API every 5 minutes, tracks booth scan counts per player in SQLite, and broadcasts real-time updates over WebSocket.
+A TypeScript backend that imports event-booth scans, stores deduplicated counts in SQLite, and sends player snapshots over WebSocket. It is an integration prototype for an EventsCloud-style scan endpoint, not a verified production event platform.
 
----
-
-## What It Does
-
-During a live event, attendees scan at booths. This system:
-
-1. **Polls** `POST /api/scan` every 5 minutes (configurable)
-2. **Deduplicates** scans using a `(badgeId, scanDate)` unique constraint
-3. **Persists** scan records and per-player counts in a local SQLite database
-4. **Broadcasts** real-time updates to connected WebSocket clients after each poll
-5. **Resumes safely** after a crash — a durable checkpoint ensures no scans are missed
-
----
-
-## Tech Stack
-
-### Runtime Dependencies
-
-| Package | Version | Purpose |
-|---|---|---|
-| `express` | ^5.1.0 | HTTP server & REST API |
-| `better-sqlite3` | ^12.8.0 | Synchronous SQLite driver |
-| `axios` | ^1.14.0 | HTTP client for the EventsCloud API |
-| `axios-retry` | ^4.5.0 | Retry plugin for axios |
-| `node-cron` | ^4.2.1 | Cron scheduler (poll every 5 min) |
-| `ws` | ^8.20.0 | WebSocket server |
-| `pino` | ^10.3.1 | Structured JSON logger |
-| `zod` | ^4.3.6 | Runtime validation for env vars and API responses |
-| `dotenv` | ^17.4.1 | `.env` file loading |
-
-### Dev Dependencies
-
-| Package | Purpose |
-|---|---|
-| `typescript` | TypeScript compiler |
-| `tsx` | Run TypeScript directly (dev mode) |
-| `pino-pretty` | Human-readable log formatting in dev |
-| `@types/better-sqlite3` | Type definitions |
-| `@types/express` | Type definitions |
-| `@types/ws` | Type definitions |
-| `@types/node-cron` | Type definitions |
-| `@types/node` | Node.js type definitions |
-
-### Prerequisites
-
-- Node.js 18+
-- npm
-
----
-
-## Project Structure
-
-```
-fankave/
-├── index.ts                          # Entry point — wires Express, WebSocket, DB, scheduler
-├── src/
-│   ├── config/
-│   │   ├── env.ts                    # Zod-validated environment variables
-│   │   └── constants.ts              # MAX_BATCH_SIZE, retry config, checkpoint key
-│   ├── types/
-│   │   ├── api.ts                    # Zod schema for EventsCloud API response
-│   │   └── domain.ts                 # Scan, PlayerScanCount, WsMessage interfaces
-│   ├── db/
-│   │   └── client.ts                 # SQLite singleton + auto-migrations on startup
-│   ├── repositories/
-│   │   ├── scan.repository.ts        # INSERT OR IGNORE into scans table
-│   │   ├── player.repository.ts      # UPSERT player scan counts
-│   │   └── checkpoint.repository.ts  # Read/write polling checkpoint
-│   ├── services/
-│   │   ├── poller.service.ts         # Fetches API, paginates through all pages
-│   │   └── scan.service.ts           # Validates, persists, broadcasts per poll cycle
-│   ├── scheduler/
-│   │   └── index.ts                  # node-cron setup, runs immediately on startup
-│   ├── websocket/
-│   │   ├── server.ts                 # ws.Server attached to Express HTTP server
-│   │   └── broadcaster.ts            # Sends player count updates to all WS clients
-│   ├── api/routes/
-│   │   ├── health.ts                 # GET /health
-│   │   └── players.ts                # GET /players
-│   └── utils/
-│       ├── logger.ts                 # Pino logger (pretty in dev, JSON in prod)
-│       └── retry.ts                  # retryWithBackoff<T> with exponential backoff
-├── .env.example
-├── .gitignore
-├── package.json
-└── tsconfig.json
+```mermaid
+flowchart LR
+  Scheduler --> Poller[Bounded HTTP fetch and time-window subdivision]
+  Poller --> Validation[Zod response validation]
+  Validation --> Transaction[SQLite scan/count/checkpoint transaction]
+  Transaction --> REST[Read-only HTTP queries]
+  Transaction --> WS[WebSocket player snapshots]
 ```
 
----
+## Run deliberately
 
-## Setup
+Use Node.js 22. Install from the lock file, inspect the environment example, and configure your own authorized provider token:
 
-### 1. Install dependencies
-
-```bash
-npm install
-```
-
-### 2. Configure environment
-
-```bash
+```sh
+npm ci
 cp .env.example .env
-```
-
-Edit `.env`:
-
-```ini
-PORT=3000
-API_URL=https://portal.eventscloud.com/api/scan
-API_TOKEN=your_token_here                      # required
-EVENT_START_DATE=2026-02-09T00:00:00.000Z      # fallback if no checkpoint in DB
-POLL_INTERVAL_CRON=*/5 * * * *                 # every 5 minutes
-DB_PATH=./fankave.db
-LOG_LEVEL=info                                 # fatal | error | warn | info | debug | trace
-```
-
-> `API_TOKEN` is the only required variable. All others have defaults.
-
-### 3. Run
-
-**Development** (auto-restarts on file changes):
-
-```bash
-npm run dev
-```
-
-**Production**:
-
-```bash
 npm run build
 npm start
 ```
 
-> The SQLite database file is created automatically on first launch — no manual migration step needed.
+Set `API_TOKEN`, `API_URL`, and `EVENT_START_DATE` for your permitted event. `DB_PATH` defaults to a local SQLite file; the database schema is initialized at startup. The server binds to `127.0.0.1:3000`. **Starting the server immediately polls the configured provider**, then follows `POLL_INTERVAL_CRON` (default every five minutes). No live provider or event account was accessed during this review.
 
----
+Native `better-sqlite3` installation is required for the real server. The review installed dependencies with scripts disabled and did not build or load that native driver. Do not infer end-to-end SQLite verification from the tests below.
 
-## REST API
+## Read API
 
-Base URL: `http://localhost:3000`
+| Route | Result |
+| --- | --- |
+| `GET /health` | Liveness response; not a provider freshness check |
+| `GET /players` | All known badge counts |
+| `GET /players/top`, `/players/bottom` | Maximum/minimum count, or 404 when empty |
+| `GET /players/:badgeId` | Badge count and up to 1,000 matching scan records |
+| `GET /scans` | Filtered scans, default 50, maximum 500; offset pagination |
 
-### `GET /health`
-
-Liveness check.
-
-**Response:**
-
-```json
-{
-  "ok": true,
-  "ts": "2026-02-09T10:36:55.000Z"
-}
-```
-
----
-
-### `GET /players`
-
-Returns all players sorted by scan count (highest first).
-
-**Response:**
+Scan filters are `badgeId` (exact), `boothName` (partial), and `scanDate` (prefix). Results use an envelope with `success`, `data`, and `error`. A synthetic example is:
 
 ```json
-{
-  "players": [
-    {
-      "badgeId": "SYNTHETIC_BADGE_ID",
-      "scanCount": 5,
-      "lastScanDate": "2026-02-09T10:36:55"
-    }
-  ],
-  "total": 42
-}
+{"success":true,"data":{"scans":[{"badgeId":"demo-badge-001","boothName":"Demo booth","scanDate":"2026-02-04T10:00:00"}],"total":1,"limit":50,"offset":0},"error":null}
 ```
 
----
+WebSocket clients receive an initial snapshot and count updates after batches. There is no UI or screenshot to capture. The original README's unwrapped responses did not match the implementation; this example does.
 
-### `GET /players/top`
+## Import behavior and limits
 
-Returns the player with the **maximum** number of scans.
+The provider request uses exclusive `scanDateGT` / `scanDateLT` bounds and a JSON token body. Responses at the 1,000-record cap trigger recursive time-window subdivision. Millisecond precision and a one-millisecond overlap at split boundaries preserve exact-boundary rows. Restart polling replays the checkpoint millisecond, relying on the database uniqueness constraint to ignore duplicates. HTTP redirects are disabled and responses are limited to 8 MiB; retry logs omit raw transport errors that might carry credentials.
 
-**Response:**
+Each batch atomically inserts scans, increments player counts, and saves its maximum timestamp. Deduplication remains `(badgeId, scanDate)`: two different booths for the same badge at the same instant collapse into one record. Booth names are read only from the first custom-fields object. Provider timestamp timezone, precision, truncation rules, ordering, late-arrival behavior, and real request contract are not independently verified. At a saturated indivisible timestamp the importer fails instead of claiming completeness. These constraints prevent a blanket “no scans missed” guarantee.
 
-```json
-{
-  "player": {
-    "badgeId": "SYNTHETIC_BADGE_ID",
-    "scanCount": 6,
-    "lastScanDate": "2026-02-09T10:24:10"
-  }
-}
+## Verification and deployment gaps
+
+```sh
+npm test
+npm run build
 ```
 
----
+Eleven Vitest tests and TypeScript compilation pass. Tests mock HTTP calls and include a synthetic 1,001-record response with an exact split-boundary record, plus API error handling. No provider calls, native SQLite integration, cron run, or live WebSocket session was performed.
 
-### `GET /players/bottom`
+HTTP queries and WebSocket snapshots are currently unauthenticated and can disclose badge visit histories. Keep this local until event access rules, retention, and an authenticated deployment boundary are defined. Player snapshots are unbounded; graceful shutdown does not fully drain active sockets and polling work. Scaling needs measured event volumes and single-writer/multi-worker design rather than a production-grade label.
 
-Returns the player with the **minimum** number of scans.
-
-**Response:**
-
-```json
-{
-  "player": {
-    "badgeId": "SYNTHETIC_BADGE_ID",
-    "scanCount": 1,
-    "lastScanDate": "2026-02-09T08:13:26"
-  }
-}
-```
-
----
-
-### `GET /players/:badgeId`
-
-Returns the scan count and full booth visit history for a specific player.
-
-**Example:** `GET /players/SYNTHETIC_BADGE_ID`
-
-**Response:**
-
-```json
-{
-  "badgeId": "SYNTHETIC_BADGE_ID",
-  "scanCount": 3,
-  "lastScanDate": "2026-02-09T10:36:55",
-  "scans": [
-    { "boothName": "Cisco Showcase", "scanDate": "2026-02-09T08:13:26" },
-    { "boothName": "Splunk Café",    "scanDate": "2026-02-09T09:05:10" }
-  ]
-}
-```
-
-Returns `404` if the `badgeId` is not found.
-
----
-
-### `GET /scans`
-
-Search and filter scan records. All query parameters are optional and can be combined.
-
-| Query param | Description | Example |
-|---|---|---|
-| `badgeId` | Exact match on player badge ID | `?badgeId=SYNTHETIC_BADGE_ID` |
-| `boothName` | Partial, case-insensitive match on booth name | `?boothName=cisco` |
-| `scanDate` | Prefix match — filter by date or datetime | `?scanDate=2026-02-09` |
-| `limit` | Max results to return (default `50`, max `500`) | `?limit=100` |
-| `offset` | Pagination offset (default `0`) | `?offset=50` |
-
-**Examples:**
-
-```
-GET /scans                                         → first 50 scans
-GET /scans?badgeId=SYNTHETIC_BADGE_ID            → all scans for a player
-GET /scans?boothName=cisco                         → all scans at Cisco booths
-GET /scans?scanDate=2026-02-09                     → all scans on Feb 9
-GET /scans?scanDate=2026-02-09T10                  → all scans in the 10am hour
-GET /scans?boothName=splunk&scanDate=2026-02-09    → Splunk scans on Feb 9
-GET /scans?limit=100&offset=100                    → second page of 100
-```
-
-**Response:**
-
-```json
-{
-  "scans": [
-    {
-      "badgeId": "SYNTHETIC_BADGE_ID",
-      "boothName": "Cisco Showcase",
-      "scanDate": "2026-02-09T08:13:26"
-    }
-  ],
-  "total": 946,
-  "limit": 50,
-  "offset": 0
-}
-```
-
----
-
-## WebSocket API
-
-Connect to `ws://localhost:3000` using any WebSocket client.
-
-### On connect — snapshot
-
-Immediately upon connection, the server sends the full current state:
-
-```json
-{
-  "type": "snapshot",
-  "players": [
-    { "badgeId": "...", "scanCount": 5, "lastScanDate": "..." }
-  ]
-}
-```
-
-### On poll completion — live update
-
-After every successful poll cycle (or page within a cycle), the server broadcasts:
-
-```json
-{
-  "type": "update",
-  "players": [
-    { "badgeId": "...", "scanCount": 6, "lastScanDate": "..." }
-  ]
-}
-```
-
-**Example (browser):**
-
-```javascript
-const ws = new WebSocket("ws://localhost:3000");
-ws.onmessage = (event) => {
-  const msg = JSON.parse(event.data);
-  if (msg.type === "snapshot" || msg.type === "update") {
-    console.table(msg.players);
-  }
-};
-```
-
----
-
-## Database
-
-SQLite file at `DB_PATH` (default: `./fankave.db`). Three tables:
-
-| Table | Purpose |
-|---|---|
-| `scans` | Raw scan records — `UNIQUE(badge_id, scan_date)` prevents duplicates |
-| `player_scan_counts` | Materialised per-player count, updated atomically with each new scan |
-| `checkpoints` | Stores the `last_scan_date` cursor so polling resumes after restarts |
-
-To inspect with the SQLite CLI:
-
-```bash
-sqlite3 fankave.db
-sqlite> SELECT * FROM player_scan_counts ORDER BY scan_count DESC;
-sqlite> SELECT * FROM checkpoints;
-sqlite> SELECT * FROM scans WHERE badge_id = 'SYNTHETIC_BADGE_ID';
-```
-
-To browse with a GUI, open `fankave.db` in [DB Browser for SQLite](https://sqlitebrowser.org), [TablePlus](https://tableplus.com), or the **SQLite Viewer** VS Code extension.
-
----
-
-## How It Works
-
-```
-Startup
-  └─ DB opens + auto-migrates (CREATE TABLE IF NOT EXISTS)
-  └─ HTTP + WebSocket server starts on PORT
-  └─ Poll cycle runs immediately, then repeats on POLL_INTERVAL_CRON
-
-Poll Cycle
-  └─ Read last checkpoint from DB (falls back to EVENT_START_DATE)
-  └─ Loop:
-      ├─ POST /api/scan?scanDateGT=<checkpoint>  (with retry + backoff)
-      ├─ Filter: only records where customFields[0]["Booth Name"] is non-empty
-      ├─ SQLite transaction:
-      │    INSERT OR IGNORE into scans
-      │    UPSERT player_scan_counts (increment count)
-      │    UPDATE checkpoint to max(scanDate) in batch
-      ├─ Broadcast updated player counts to all connected WS clients
-      └─ If batch = 1000 records → advance cursor and fetch next page
-         If batch < 1000 records → done until next scheduled tick
-```
-
-### Reliability Guarantees
-
-| Concern | Mechanism |
-|---|---|
-| No missed scans | Checkpoint only advances inside the same DB transaction as scan inserts |
-| No duplicate scans | `UNIQUE(badge_id, scan_date)` + `INSERT OR IGNORE` |
-| API page limit (1000/page) | Automatic transparent pagination within a single poll tick |
-| API failures | 3 retries with exponential backoff (1 s → 2 s → 4 s); failed cycle resumes from last checkpoint on next tick |
-| Safe restart after crash | Checkpoint persisted in SQLite; next run resumes from last committed position |
-| Overlapping poll ticks | In-memory `isRunning` guard skips a tick if the previous one hasn't finished |
-
----
-
-## Environment Variable Reference
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `API_TOKEN` | **Yes** | — | EventsCloud API auth token |
-| `PORT` | No | `3000` | HTTP server port |
-| `API_URL` | No | EventsCloud scan endpoint | Full URL to the scan API |
-| `EVENT_START_DATE` | No | Unix epoch | Fallback scan start date when no checkpoint exists (ISO 8601) |
-| `POLL_INTERVAL_CRON` | No | `*/5 * * * *` | Cron expression controlling polling frequency |
-| `DB_PATH` | No | `./fankave.db` | Path to the SQLite database file |
-| `LOG_LEVEL` | No | `info` | Pino log level (`fatal` `error` `warn` `info` `debug` `trace`) |
+Committed SQLite WAL/SHM sidecars were removed from reachable history and ignored. README badge identifiers were replaced by obvious synthetic examples. Whether the original files represented real event data remains an owner decision; deleting Git references cannot revoke copies already downloaded.

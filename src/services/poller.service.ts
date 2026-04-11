@@ -14,22 +14,14 @@ function parseMs(iso: string): number {
   return t;
 }
 
-/**
- * Builds scanDateGT / scanDateLT query values. Uses second precision when the
- * window spans whole seconds (matches API samples); uses millisecond precision
- * when the exclusive window lies inside a single second so subdivision still works.
- */
+/** Keep millisecond precision so split windows do not round away boundary rows. */
 function boundsToQueryParams(loMs: number, hiMs: number): { scanDateGT: string; scanDateLT: string } {
   if (loMs >= hiMs) {
     throw new Error("scanDateGT must be strictly less than scanDateLT");
   }
   const loIso = new Date(loMs).toISOString();
   const hiIso = new Date(hiMs).toISOString();
-  const sameSecond = loIso.slice(0, 19) === hiIso.slice(0, 19);
-  if (sameSecond) {
-    return { scanDateGT: loIso.slice(0, 23), scanDateLT: hiIso.slice(0, 23) };
-  }
-  return { scanDateGT: loIso.slice(0, 19), scanDateLT: hiIso.slice(0, 19) };
+  return { scanDateGT: loIso.slice(0, 23), scanDateLT: hiIso.slice(0, 23) };
 }
 
 function buildScanUrl(scanDateGT: string, scanDateLT: string): string {
@@ -47,6 +39,8 @@ async function fetchBatchBetween(loMs: number, hiMs: number): Promise<RawScan[]>
     headers: { "Content-Type": "application/json" },
     timeout: 30_000,
     validateStatus: () => true,
+    maxRedirects: 0,
+    maxContentLength: 8 * 1024 * 1024,
   });
 
   if (response.status !== 200) {
@@ -95,9 +89,9 @@ async function* fetchRangeMs(loMs: number, hiMs: number): AsyncGenerator<RawScan
 
   // Overflow: split the time window (not cursor-by-max-date) so duplicate scanDate
   // values cannot hide rows beyond the first 1000.
-  if (hiMs - loMs <= 1) {
+  if (hiMs - loMs <= 2) {
     throw new Error(
-      "Scan fetch: more than 1000 scans in a 1ms window; cannot subdivide further. Check API or clock precision.",
+      "Scan fetch: more than 1000 scans at a millisecond boundary; cannot subdivide further. Check API or clock precision.",
     );
   }
 
@@ -115,7 +109,8 @@ async function* fetchRangeMs(loMs: number, hiMs: number): AsyncGenerator<RawScan
   }
 
   yield* fetchRangeMs(loMs, split);
-  yield* fetchRangeMs(split, hiMs);
+  // Exclusive bounds need a one-millisecond overlap to retain the split instant.
+  yield* fetchRangeMs(split - 1, hiMs);
 }
 
 /**

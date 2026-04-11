@@ -130,3 +130,21 @@ describe("fetchAllScansInRange", () => {
     expect(axios.post).not.toHaveBeenCalled();
   });
 });
+
+
+describe("exclusive window boundaries", () => {
+  it("keeps the exact split timestamp instead of dropping its row", async () => {
+    const origin = Date.parse("2026-02-09T00:00:00.000Z");
+    const rows = Array.from({ length: 1001 }, (_, i) => makeScan(i, new Date(origin + 500 + i).toISOString()));
+    vi.mocked(axios.post).mockImplementation(async (url: string) => {
+      const query = new URL(url).searchParams;
+      const lo = Date.parse(query.get("scanDateGT")! + "Z");
+      const hi = Date.parse(query.get("scanDateLT")! + "Z");
+      return okJson(rows.filter(r => Date.parse(r.scanDate) > lo && Date.parse(r.scanDate) < hi).slice(0, 1000));
+    });
+    const received: RawScan[] = [];
+    for await (const batch of fetchAllScansInRange(new Date(origin).toISOString(), new Date(origin + 2000).toISOString())) received.push(...batch);
+    expect(new Set(received.map(r => r.badgeId)).size).toBe(1001);
+    expect(received.some(r => r.scanDate === new Date(origin + 1000).toISOString())).toBe(true);
+  });
+});

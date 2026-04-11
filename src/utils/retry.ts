@@ -20,7 +20,7 @@ export async function retryWithBackoff<T>(
       const delayMs = baseDelayMs * Math.pow(2, attempt - 1);
 
       logger.warn(
-        { attempt, maxAttempts, delayMs, err },
+        { attempt, maxAttempts, delayMs },
         "Operation failed, retrying...",
       );
 

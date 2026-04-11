@@ -30,7 +30,7 @@ const httpServer = http.createServer(app);
 const playerRepo = createPlayerRepository(db);
 createWsServer(httpServer, () => playerRepo.getAllPlayerCounts());
 
-httpServer.listen(env.PORT, () => {
+httpServer.listen(env.PORT, "127.0.0.1", () => {
   logger.info({ port: env.PORT }, "HTTP + WebSocket server listening");
   startScheduler(db);
 });

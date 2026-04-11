@@ -17,9 +17,8 @@ async function safePollCycle(db: Database.Database): Promise<void> {
     await runPollCycle(db);
   } catch (err) {
     // retryWithBackoff already exhausted its attempts — log and continue.
-    // The checkpoint was not advanced, so the next cycle will re-fetch from
-    // the last successful position — no data is lost.
-    logger.error({ err }, "Poll cycle failed after all retries, will resume next tick");
+    // Resume from the last committed checkpoint; provider late arrivals still need reconciliation.
+    logger.error({}, "Poll cycle failed after all retries, will resume next tick");
   } finally {
     isRunning = false;
   }

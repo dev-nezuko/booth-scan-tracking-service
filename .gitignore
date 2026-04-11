@@ -3,3 +3,8 @@ dist/
 .env
 *.db
 .DS_Store
+*.db-wal
+*.db-shm
+coverage/
+.env.*
+!.env.example

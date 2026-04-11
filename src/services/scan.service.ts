@@ -24,7 +24,8 @@ export async function runPollCycle(db: Database.Database): Promise<void> {
   const playerRepo = createPlayerRepository(db);
   const checkpointRepo = createCheckpointRepository(db);
 
-  const fromDate = checkpointRepo.getLastScanDate() ?? env.EVENT_START_DATE;
+  const checkpoint = checkpointRepo.getLastScanDate();
+  const fromDate = checkpoint ? new Date(Date.parse(checkpoint) - 1).toISOString() : env.EVENT_START_DATE;
   const upperBoundExclusive = new Date().toISOString();
 
   logger.info({ fromDate, upperBoundExclusive }, "Poll cycle started");
